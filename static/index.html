@@ -8,7 +8,10 @@
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f0f2f5; height: 100vh; display: flex; justify-content: center; align-items: center; }
         .chat-container { width: 420px; height: 600px; background: #fff; border-radius: 16px; box-shadow: 0 4px 24px rgba(0,0,0,0.1); display: flex; flex-direction: column; overflow: hidden; }
-        .header { background: linear-gradient(135deg, #667eea, #764ba2); color: #fff; padding: 16px 20px; font-size: 16px; font-weight: 600; }
+        .header { background: linear-gradient(135deg, #667eea, #764ba2); color: #fff; padding: 12px 20px; display: flex; justify-content: space-between; align-items: center; }
+        .header-title { font-size: 16px; font-weight: 600; }
+        .header-btn { background: rgba(255,255,255,0.2); border: none; color: #fff; padding: 4px 12px; border-radius: 12px; font-size: 12px; cursor: pointer; }
+        .header-btn:hover { background: rgba(255,255,255,0.3); }
         .messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
         .msg { max-width: 80%; padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.6; word-break: break-word; white-space: pre-wrap; }
         .msg.user { align-self: flex-end; background: #667eea; color: #fff; border-bottom-right-radius: 4px; }
@@ -24,7 +27,10 @@
 </head>
 <body>
     <div class="chat-container">
-        <div class="header">智能客服</div>
+        <div class="header">
+            <span class="header-title">智能客服</span>
+            <button class="header-btn" onclick="clearChat()">清空对话</button>
+        </div>
         <div class="messages" id="messages">
             <div class="msg bot">你好！我是智能客服，可以帮你查产品、查订单、处理售后。请问有什么可以帮您？</div>
         </div>
@@ -38,6 +44,7 @@
         const messages = document.getElementById("messages");
         const input = document.getElementById("input");
         const sendBtn = document.getElementById("sendBtn");
+        const sessionId = "session_" + Math.random().toString(36).slice(2, 10);
 
         input.addEventListener("keydown", e => { if (e.key === "Enter") send(); });
 
@@ -55,7 +62,7 @@
                 const res = await fetch("/api/chat", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ message: text })
+                    body: JSON.stringify({ message: text, session_id: sessionId })
                 });
                 const data = await res.json();
                 loading.remove();
@@ -66,6 +73,7 @@
             }
 
             sendBtn.disabled = false;
+            input.focus();
         }
 
         function addMsg(text, cls) {
@@ -75,6 +83,15 @@
             messages.appendChild(div);
             messages.scrollTop = messages.scrollHeight;
             return div;
+        }
+
+        async function clearChat() {
+            await fetch("/api/clear", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ message: "", session_id: sessionId })
+            });
+            messages.innerHTML = '<div class="msg bot">对话已清空，有什么可以帮您？</div>';
         }
     </script>
 </body>

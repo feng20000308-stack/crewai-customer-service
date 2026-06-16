@@ -845,15 +845,10 @@ def classify_intent(question: str) -> str:
     return "general"
 
 
-def run_customer_service(question: str) -> str:
-    """根据意图路由到对应的 Agent"""
+def run_customer_service(question: str, history: str = "") -> str:
+    """根据意图路由到对应的 Agent，history 为历史对话文本"""
     intent = classify_intent(question)
-    task_map = {
-        "product": product_task,
-        "order": order_task,
-        "after_sales": after_sales_task,
-        "general": general_task,
-    }
+
     agent_map = {
         "product": product_advisor,
         "order": order_manager,
@@ -869,9 +864,60 @@ def run_customer_service(question: str) -> str:
 
     print(f"[路由] 识别意图: {intent_names[intent]}")
 
+    # 动态构建 task，注入历史上下文
+    history_context = ""
+    if history:
+        history_context = f'\n\n【历史对话】\n{history}\n\n请结合以上对话历史理解上下文。如果客户说"这个"、"那个"、"它"等指代词，请根据历史推断具体指什么。'
+
+    task_descriptions = {
+        "product": (
+            "客户咨询（产品类）：{question}\n\n"
+            "请：\n"
+            "1. 用工具查询相关产品信息\n"
+            "2. 准确回答客户问题\n"
+            "3. 如有多款产品，主动做对比\n"
+            "4. 适当推荐，但不要过度推销"
+            f"{history_context}"
+        ),
+        "order": (
+            "客户咨询（订单类）：{question}\n\n"
+            "请：\n"
+            "1. 用工具查询订单信息\n"
+            "2. 告知订单状态和关键信息\n"
+            "3. 如果有异常（如延迟），主动提醒\n"
+            "4. 提供后续操作建议"
+            f"{history_context}"
+        ),
+        "after_sales": (
+            "客户咨询（售后类）：{question}\n\n"
+            "请：\n"
+            "1. 了解客户的具体问题\n"
+            "2. 查询适用的售后政策\n"
+            "3. 给出解决方案\n"
+            "4. 如需申请售后，帮客户操作\n"
+            "5. 态度温和，以解决问题为导向"
+            f"{history_context}"
+        ),
+        "general": (
+            "客户咨询：{question}\n\n"
+            "请：\n"
+            "1. 分析客户的真实需求\n"
+            "2. 用工具查询相关信息（产品、订单、售后等）\n"
+            "3. 给出全面、准确的回答\n"
+            "4. 如涉及多个方面，分点说明"
+            f"{history_context}"
+        ),
+    }
+
+    task = Task(
+        description=task_descriptions[intent],
+        expected_output="专业、准确的客服回答",
+        agent=agent_map[intent],
+    )
+
     crew = Crew(
         agents=[agent_map[intent]],
-        tasks=[task_map[intent]],
+        tasks=[task],
         process=Process.sequential,
         verbose=False,
     )
