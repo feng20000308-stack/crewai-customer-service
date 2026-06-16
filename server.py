@@ -21,7 +21,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # Redis 连接（不可用时自动降级为内存存储）
 REDIS_PREFIX = "crewai_cs:"
-HISTORY_TTL = 3600 * 24
+HISTORY_TTL = 3600
 _memory_store: dict[str, list[dict]] = {}
 
 try:
@@ -77,11 +77,11 @@ async def index():
 async def chat(req: ChatRequest):
     history = get_history(req.session_id)
 
-    # 构建历史上下文（最近6轮）
+    # 构建历史上下文（全部对话）
     history_text = ""
     if history:
         lines = []
-        for h in history[-6:]:
+        for h in history:
             lines.append(f"客户: {h['user']}")
             lines.append(f"客服: {h['bot']}")
         history_text = "\n".join(lines)
