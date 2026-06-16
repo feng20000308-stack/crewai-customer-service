@@ -416,6 +416,182 @@ class ProductRelationGraphTool(BaseTool):
             return "\n".join(lines)
 
 
+# ---------- 业务操作工具（本地函数模拟）----------
+
+import uuid as _uuid
+
+# 模拟数据
+_refunds_db = []
+_coupons_db = []
+_logistics_db = {
+    "ORD20240101001": {
+        "carrier": "顺丰速运", "tracking_no": "SF1234567890",
+        "status": "运输中", "location": "北京分拣中心",
+        "tracks": [
+            {"time": "2024-01-01 10:00", "info": "商家已发货"},
+            {"time": "2024-01-01 18:00", "info": "包裹已到达北京分拣中心"},
+            {"time": "2024-01-02 08:00", "info": "包裹正在派送中"},
+        ],
+    },
+    "ORD20240103001": {
+        "carrier": "中通快递", "tracking_no": "ZT9876543210",
+        "status": "待发货", "location": "商家仓库",
+        "tracks": [{"time": "2024-01-03 09:00", "info": "订单已确认，等待发货"}],
+    },
+    "ORD20240107001": {
+        "carrier": "京东物流", "tracking_no": "JD0011223344",
+        "status": "已签收", "location": "广州市天河区",
+        "tracks": [
+            {"time": "2024-01-07 10:00", "info": "商家已发货"},
+            {"time": "2024-01-08 06:00", "info": "包裹到达广州分拣中心"},
+            {"time": "2024-01-08 14:00", "info": "快递员正在派送"},
+            {"time": "2024-01-08 16:30", "info": "已签收，签收人：本人"},
+        ],
+    },
+}
+_recommendations_db = {
+    "张三": [
+        {"name": "AirPods Pro", "price": 1899, "reason": "iPhone 用户常搭配购买", "score": 0.95},
+        {"name": "Apple Watch", "price": 2999, "reason": "苹果生态热门配件", "score": 0.82},
+    ],
+    "李四": [
+        {"name": "iPhone 15", "price": 5999, "reason": "MacBook 用户常搭配购买", "score": 0.88},
+        {"name": "iPad Air", "price": 4799, "reason": "生产力工具组合", "score": 0.75},
+    ],
+    "王五": [
+        {"name": "MacBook Pro", "price": 12999, "reason": "iPhone + AirPods 用户升级选择", "score": 0.90},
+        {"name": "Apple Watch", "price": 2999, "reason": "苹果全家桶推荐", "score": 0.78},
+    ],
+}
+
+
+class ApplyRefundInput(BaseModel):
+    order_no: str = Field(description="订单号")
+    reason: str = Field(description="退款原因，如 '不想要了'、'质量问题'、'买错了'")
+
+class ApplyRefundTool(BaseTool):
+    name: str = "apply_refund"
+    description: str = "为用户申请退款，返回退款单号和状态"
+    args_schema: type[BaseModel] = ApplyRefundInput
+
+    def _run(self, order_no: str, reason: str) -> str:
+        refund_no = f"REF{_uuid.uuid4().hex[:8].upper()}"
+        record = {"refund_no": refund_no, "order_no": order_no, "reason": reason, "status": "审核中"}
+        _refunds_db.append(record)
+        print(f"[退款申请] 订单:{order_no} 原因:{reason} -> 退款单:{refund_no}")
+        return (
+            f"退款申请已提交\n"
+            f"  退款单号: {refund_no}\n"
+            f"  订单号: {order_no}\n"
+            f"  原因: {reason}\n"
+            f"  状态: 审核中\n"
+            f"  预计到账: 1-3个工作日"
+        )
+
+
+class QueryRefundInput(BaseModel):
+    refund_no: str = Field(description="退款单号")
+
+class QueryRefundTool(BaseTool):
+    name: str = "query_refund"
+    description: str = "查询退款申请的处理状态"
+    args_schema: type[BaseModel] = QueryRefundInput
+
+    def _run(self, refund_no: str) -> str:
+        for r in _refunds_db:
+            if r["refund_no"] == refund_no:
+                return f"退款单 {refund_no}: 状态={r['status']}, 订单={r['order_no']}"
+        return f"未找到退款单 {refund_no}"
+
+
+class CancelOrderInput(BaseModel):
+    order_no: str = Field(description="要取消的订单号")
+
+class CancelOrderTool(BaseTool):
+    name: str = "cancel_order"
+    description: str = "取消用户的未完成订单"
+    args_schema: type[BaseModel] = CancelOrderInput
+
+    def _run(self, order_no: str) -> str:
+        # 检查订单状态
+        with driver.session() as session:
+            result = session.run("""
+                MATCH (o:Order {order_no: $no}) RETURN o.status AS status
+            """, no=order_no)
+            record = result.single()
+            if not record:
+                return f"订单 {order_no} 不存在"
+            status = record["status"]
+            if status == "已完成":
+                return f"订单 {order_no} 已完成，无法取消。如需退货请申请退款。"
+            # 更新状态
+            session.run("""
+                MATCH (o:Order {order_no: $no}) SET o.status = '已取消'
+            """, no=order_no)
+        print(f"[取消订单] 订单:{order_no} -> 已取消")
+        return f"订单 {order_no} 已成功取消"
+
+
+class TrackLogisticsInput(BaseModel):
+    order_no: str = Field(description="订单号")
+
+class TrackLogisticsTool(BaseTool):
+    name: str = "track_logistics"
+    description: str = "查询订单的物流信息，包括快递公司、运单号、物流轨迹"
+    args_schema: type[BaseModel] = TrackLogisticsInput
+
+    def _run(self, order_no: str) -> str:
+        d = _logistics_db.get(order_no)
+        if not d:
+            return f"订单 {order_no} 暂无物流信息"
+        lines = [
+            f"物流信息 - 订单 {order_no}:",
+            f"  快递: {d['carrier']} | 运单号: {d['tracking_no']}",
+            f"  状态: {d['status']} | 当前位置: {d['location']}",
+            "  物流轨迹:",
+        ]
+        for t in d["tracks"]:
+            lines.append(f"    [{t['time']}] {t['info']}")
+        print(f"[物流查询] 订单:{order_no} 状态:{d['status']}")
+        return "\n".join(lines)
+
+
+class GrantCouponInput(BaseModel):
+    user_name: str = Field(description="用户名")
+    amount: float = Field(description="优惠券金额，如 50、100")
+    reason: str = Field(description="发放原因，如 '物流延迟补偿'、'售后安抚'")
+
+class GrantCouponTool(BaseTool):
+    name: str = "grant_coupon"
+    description: str = "向用户发放优惠券，用于售后补偿"
+    args_schema: type[BaseModel] = GrantCouponInput
+
+    def _run(self, user_name: str, amount: float, reason: str) -> str:
+        coupon_no = f"CPN{_uuid.uuid4().hex[:8].upper()}"
+        _coupons_db.append({"coupon_no": coupon_no, "user": user_name, "amount": amount})
+        print(f"[发放优惠券] 用户:{user_name} 金额:{amount}元 原因:{reason} -> 券号:{coupon_no}")
+        return f"优惠券已发放: {coupon_no} | {user_name} | {amount}元 | 有效期至 2024-12-31"
+
+
+class GetRecommendationInput(BaseModel):
+    user_name: str = Field(description="用户名，如 '张三'")
+
+class GetRecommendationTool(BaseTool):
+    name: str = "get_recommendation"
+    description: str = "获取用户的个性化产品推荐，基于购买历史"
+    args_schema: type[BaseModel] = GetRecommendationInput
+
+    def _run(self, user_name: str) -> str:
+        data = _recommendations_db.get(user_name, [])
+        if not data:
+            return f"暂无 {user_name} 的推荐数据"
+        lines = [f"为 {user_name} 推荐的产品："]
+        for r in data:
+            lines.append(f"  {r['name']} - {r['price']}元 ({r['reason']}, 匹配度:{r['score']})")
+        print(f"[个性化推荐] 用户:{user_name} -> {len(data)}个推荐")
+        return "\n".join(lines)
+
+
 # ==================== Agent 定义 ====================
 
 # 1. 产品顾问
@@ -431,7 +607,8 @@ product_advisor = Agent(
     allow_delegation=False,
     llm=llm,
     tools=[SearchProductTool(), ListProductsTool(), CompareProductsTool(),
-           RecommendByPurchaseTool(), ProductRelationGraphTool()],
+           RecommendByPurchaseTool(), ProductRelationGraphTool(),
+           GetRecommendationTool()],
 )
 
 # 2. 订单管家
@@ -446,7 +623,7 @@ order_manager = Agent(
     allow_delegation=False,
     llm=llm,
     # memory=True,
-    tools=[QueryOrderTool(), UserOrderHistoryTool()],
+    tools=[QueryOrderTool(), UserOrderHistoryTool(), TrackLogisticsTool()],
 )
 
 # 3. 售后专员
@@ -463,7 +640,8 @@ after_sales = Agent(
     allow_delegation=False,
     llm=llm,
     # memory=True,
-    tools=[AfterSalesPolicyTool(), ApplyAfterSalesTool(), QueryOrderTool()],
+    tools=[AfterSalesPolicyTool(), ApplyAfterSalesTool(), QueryOrderTool(),
+           ApplyRefundTool(), CancelOrderTool(), GrantCouponTool()],
 )
 
 # 4. 综合客服（兜底）
@@ -480,7 +658,9 @@ general_cs = Agent(
     llm=llm,
     tools=[SearchProductTool(), QueryOrderTool(), AfterSalesPolicyTool(),
            UserOrderHistoryTool(), ListProductsTool(), CypherQueryTool(),
-           RecommendByPurchaseTool(), UserSimilarityTool(), ProductRelationGraphTool()],
+           RecommendByPurchaseTool(), UserSimilarityTool(), ProductRelationGraphTool(),
+           ApplyRefundTool(), CancelOrderTool(), TrackLogisticsTool(),
+           GrantCouponTool(), GetRecommendationTool()],
 )
 
 
@@ -630,7 +810,9 @@ if __name__ == "__main__":
     # 演示问题
     demo_questions = [
         "iPhone 15 多少钱？有什么特点？",
-        "买了 iPhone 15 的人还买了什么？帮我推荐一下",
+        "我的订单 ORD20240101001 想退货，因为质量问题",
+        "帮我查一下订单 ORD20240101001 的物流",
+        "张三有什么个性化推荐？",
     ]
 
     for q in demo_questions:
