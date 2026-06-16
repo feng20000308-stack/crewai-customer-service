@@ -423,6 +423,7 @@ import uuid as _uuid
 # 模拟数据
 _refunds_db = []
 _coupons_db = []
+_pending_approvals = []  # 待人工审核队列
 _logistics_db = {
     "ORD20240101001": {
         "carrier": "顺丰速运", "tracking_no": "SF1234567890",
@@ -471,21 +472,25 @@ class ApplyRefundInput(BaseModel):
 
 class ApplyRefundTool(BaseTool):
     name: str = "apply_refund"
-    description: str = "为用户申请退款，返回退款单号和状态"
+    description: str = "提交退款申请，需人工审核后才会执行退款。返回申请单号。"
     args_schema: type[BaseModel] = ApplyRefundInput
 
     def _run(self, order_no: str, reason: str) -> str:
-        refund_no = f"REF{_uuid.uuid4().hex[:8].upper()}"
-        record = {"refund_no": refund_no, "order_no": order_no, "reason": reason, "status": "审核中"}
-        _refunds_db.append(record)
-        print(f"[退款申请] 订单:{order_no} 原因:{reason} -> 退款单:{refund_no}")
+        apply_no = f"APY{_uuid.uuid4().hex[:8].upper()}"
+        record = {
+            "apply_no": apply_no, "type": "退款",
+            "order_no": order_no, "reason": reason,
+            "status": "待审核", "detail": f"订单 {order_no} 退款，原因：{reason}",
+        }
+        _pending_approvals.append(record)
+        print(f"[退款申请-待审核] 订单:{order_no} 原因:{reason} -> 申请单:{apply_no}")
         return (
-            f"退款申请已提交\n"
-            f"  退款单号: {refund_no}\n"
+            f"退款申请已提交，需人工审核\n"
+            f"  申请单号: {apply_no}\n"
             f"  订单号: {order_no}\n"
             f"  原因: {reason}\n"
-            f"  状态: 审核中\n"
-            f"  预计到账: 1-3个工作日"
+            f"  状态: 待审核（预计1-2小时完成审核）\n"
+            f"  请告知客户：审核通过后将自动执行退款，预计1-3个工作日到账"
         )
 
 
@@ -509,11 +514,11 @@ class CancelOrderInput(BaseModel):
 
 class CancelOrderTool(BaseTool):
     name: str = "cancel_order"
-    description: str = "取消用户的未完成订单"
+    description: str = "提交取消订单申请，需人工审核后才会执行取消。返回申请单号。"
     args_schema: type[BaseModel] = CancelOrderInput
 
     def _run(self, order_no: str) -> str:
-        # 检查订单状态
+        # 先检查订单状态
         with driver.session() as session:
             result = session.run("""
                 MATCH (o:Order {order_no: $no}) RETURN o.status AS status
@@ -524,12 +529,25 @@ class CancelOrderTool(BaseTool):
             status = record["status"]
             if status == "已完成":
                 return f"订单 {order_no} 已完成，无法取消。如需退货请申请退款。"
-            # 更新状态
-            session.run("""
-                MATCH (o:Order {order_no: $no}) SET o.status = '已取消'
-            """, no=order_no)
-        print(f"[取消订单] 订单:{order_no} -> 已取消")
-        return f"订单 {order_no} 已成功取消"
+            if status == "已取消":
+                return f"订单 {order_no} 已经是取消状态，无需重复操作。"
+
+        apply_no = f"APY{_uuid.uuid4().hex[:8].upper()}"
+        _pending_approvals.append({
+            "apply_no": apply_no, "type": "取消订单",
+            "order_no": order_no, "reason": "客户申请取消",
+            "status": "待审核",
+            "detail": f"取消订单 {order_no}，当前状态：{status}",
+        })
+        print(f"[取消订单-待审核] 订单:{order_no} -> 申请单:{apply_no}")
+        return (
+            f"取消订单申请已提交，需人工审核\n"
+            f"  申请单号: {apply_no}\n"
+            f"  订单号: {order_no}\n"
+            f"  当前状态: {status}\n"
+            f"  审核状态: 待审核（预计1-2小时完成审核）\n"
+            f"  请告知客户：审核通过后将自动取消订单并退款"
+        )
 
 
 class TrackLogisticsInput(BaseModel):
@@ -571,6 +589,67 @@ class GrantCouponTool(BaseTool):
         _coupons_db.append({"coupon_no": coupon_no, "user": user_name, "amount": amount})
         print(f"[发放优惠券] 用户:{user_name} 金额:{amount}元 原因:{reason} -> 券号:{coupon_no}")
         return f"优惠券已发放: {coupon_no} | {user_name} | {amount}元 | 有效期至 2024-12-31"
+
+
+class ListPendingApprovalsInput(BaseModel):
+    placeholder: str = Field(default="", description="无需填写")
+
+class ListPendingApprovalsTool(BaseTool):
+    name: str = "list_pending_approvals"
+    description: str = "查看所有待人工审核的工单（退款、取消订单等）"
+    args_schema: type[BaseModel] = ListPendingApprovalsInput
+
+    def _run(self, placeholder: str = "") -> str:
+        pending = [a for a in _pending_approvals if a["status"] == "待审核"]
+        if not pending:
+            return "当前没有待审核的工单"
+        lines = [f"待审核工单（共{len(pending)}条）："]
+        for a in pending:
+            lines.append(f"  [{a['apply_no']}] {a['type']} | {a['detail']} | 状态: {a['status']}")
+        return "\n".join(lines)
+
+
+class ApproveRequestInput(BaseModel):
+    apply_no: str = Field(description="申请单号，如 'APY12345678'")
+    action: str = Field(description="审批操作：'approve' 通过 或 'reject' 拒绝")
+    note: str = Field(default="", description="审批备注，如 '同意退款'、'超出时效不予受理'")
+
+class ApproveRequestTool(BaseTool):
+    name: str = "approve_request"
+    description: str = "审核工单：通过或拒绝退款/取消订单等申请。通过后自动执行对应操作。"
+    args_schema: type[BaseModel] = ApproveRequestInput
+
+    def _run(self, apply_no: str, action: str, note: str = "") -> str:
+        for a in _pending_approvals:
+            if a["apply_no"] == apply_no and a["status"] == "待审核":
+                if action == "approve":
+                    a["status"] = "已通过"
+                    a["note"] = note
+                    # 执行对应操作
+                    if a["type"] == "退款":
+                        refund_no = f"REF{_uuid.uuid4().hex[:8].upper()}"
+                        _refunds_db.append({
+                            "refund_no": refund_no, "order_no": a["order_no"],
+                            "reason": a["reason"], "status": "退款处理中",
+                        })
+                        a["result"] = refund_no
+                        print(f"[审批通过] {apply_no} -> 退款单:{refund_no}")
+                        return f"工单 {apply_no} 已通过，退款单号: {refund_no}，预计1-3个工作日到账"
+                    elif a["type"] == "取消订单":
+                        with driver.session() as session:
+                            session.run("""
+                                MATCH (o:Order {order_no: $no}) SET o.status = '已取消'
+                            """, no=a["order_no"])
+                        print(f"[审批通过] {apply_no} -> 订单:{a['order_no']} 已取消")
+                        return f"工单 {apply_no} 已通过，订单 {a['order_no']} 已取消"
+                elif action == "reject":
+                    a["status"] = "已拒绝"
+                    a["note"] = note
+                    print(f"[审批拒绝] {apply_no} 备注:{note}")
+                    return f"工单 {apply_no} 已拒绝，原因: {note}"
+                else:
+                    return "action 只能是 'approve' 或 'reject'"
+        return f"未找到待审核工单 {apply_no}"
 
 
 class GetRecommendationInput(BaseModel):
@@ -660,7 +739,8 @@ general_cs = Agent(
            UserOrderHistoryTool(), ListProductsTool(), CypherQueryTool(),
            RecommendByPurchaseTool(), UserSimilarityTool(), ProductRelationGraphTool(),
            ApplyRefundTool(), CancelOrderTool(), TrackLogisticsTool(),
-           GrantCouponTool(), GetRecommendationTool()],
+           GrantCouponTool(), GetRecommendationTool(),
+           ListPendingApprovalsTool(), ApproveRequestTool()],
 )
 
 
@@ -813,6 +893,7 @@ if __name__ == "__main__":
         "我的订单 ORD20240101001 想退货，因为质量问题",
         "帮我查一下订单 ORD20240101001 的物流",
         "张三有什么个性化推荐？",
+        "帮我看看有没有待审核的工单",
     ]
 
     for q in demo_questions:
