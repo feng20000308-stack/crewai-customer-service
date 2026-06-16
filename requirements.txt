@@ -1,0 +1,6 @@
+crewai
+crewai-tools
+neo4j
+openai
+fastapi
+uvicorn
