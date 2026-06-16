@@ -926,7 +926,7 @@ def run_customer_service(question: str, history: str = "") -> str:
 
 
 # ==================== 主程序 ====================
-
+#uvicorn server:app --port 8000
 if __name__ == "__main__":
     print("=" * 60)
     print("  智能客服系统已启动（输入 quit 退出）")
